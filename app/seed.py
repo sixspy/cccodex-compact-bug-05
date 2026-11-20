@@ -28,6 +28,7 @@ def seed_if_needed(db_path: str | None = None) -> dict:
         ).fetchone()
         if not _schema_compatible(conn) or (ver and ver["value"] != SCHEMA_VERSION):
             for table in (
+                "threshold_snapshots",
                 "volume_reports",
                 "rewrite_jobs",
                 "plan_items",
@@ -39,68 +40,76 @@ def seed_if_needed(db_path: str | None = None) -> dict:
                 conn.execute(f"DROP TABLE IF EXISTS {table}")
             conn.executescript(SCHEMA)
         elif conn.execute("SELECT value FROM meta WHERE key='seeded'").fetchone():
-            return {"seeded": False, "reason": "already"}
-        files = [
-            ("lake/dw_orders/part-0001.parquet", "dw_orders", 420_000),
-            ("lake/dw_orders/part-0002.parquet", "dw_orders", 380_000),
-            ("lake/dw_orders/part-0003.parquet", "dw_orders", 510_000),
-            ("lake/dw_payments/part-0001.parquet", "dw_payments", 290_000),
-            ("lake/dw_payments/part-0002.parquet", "dw_payments", 305_000),
-            ("lake/dw_users/part-0001.parquet", "dw_users", 180_000),
-            ("lake/dw_users/part-0002.parquet", "dw_users", 195_000),
-            ("lake/dw_users/part-0003.parquet", "dw_users", 210_000),
-        ]
-        for path, table, size in files:
-            conn.execute(
-                "INSERT INTO lake_files(path, table_name, size_bytes, status) VALUES (?,?,?, '碎文件')",
-                (path, table, size),
-            )
-        cur = conn.execute(
-            "INSERT INTO compact_plans(plan_code, title, status, target_table, note) "
-            "VALUES ('CP-2026-001','订单碎文件压实','草稿','dw_orders','首轮样例计划')"
-        )
-        plan_id = cur.lastrowid
-        order_ids = conn.execute(
-            "SELECT id FROM lake_files WHERE table_name='dw_orders' ORDER BY id"
-        ).fetchall()
-        for row in order_ids[:3]:
-            conn.execute(
-                "INSERT INTO plan_items(plan_id, file_id) VALUES (?,?)",
-                (plan_id, row["id"]),
-            )
-            conn.execute(
-                "UPDATE lake_files SET status='已入计划' WHERE id=?",
-                (row["id"],),
-            )
+            already = True
+        else:
+            already = False
+
+        if not already:
+            _seed_rows(conn)
+    # 事务已提交：再补一次对齐快照（老库/新库皆适用；已有快照则不动）。
+    from app.services.threshold_gate import ensure_initial_snapshot
+
+    ensure_initial_snapshot(db_path)
+    from app.services.thr_stale_surface import seed_skew
+
+    seed_skew(db_path)
+    if already:
+        return {"seeded": False, "reason": "already"}
+    return {"seeded": True, "files": 8, "plans": 1, "settings": 3}
+
+
+def _seed_rows(conn) -> None:
+    files = [
+        ("lake/dw_orders/part-0001.parquet", "dw_orders", 420_000),
+        ("lake/dw_orders/part-0002.parquet", "dw_orders", 380_000),
+        ("lake/dw_orders/part-0003.parquet", "dw_orders", 510_000),
+        ("lake/dw_payments/part-0001.parquet", "dw_payments", 290_000),
+        ("lake/dw_payments/part-0002.parquet", "dw_payments", 305_000),
+        ("lake/dw_users/part-0001.parquet", "dw_users", 180_000),
+        ("lake/dw_users/part-0002.parquet", "dw_users", 195_000),
+        ("lake/dw_users/part-0003.parquet", "dw_users", 210_000),
+    ]
+    for path, table, size in files:
         conn.execute(
-            "INSERT INTO lab_settings(key, value, label) VALUES "
-            "('compact_threshold_kb','256','碎文件阈值(KB)'),"
-            "('rewrite_parallel','1','合并并发度'),"
-            "('reconcile_mode','严格','对账模式')"
+            "INSERT INTO lake_files(path, table_name, size_bytes, status) VALUES (?,?,?, '碎文件')",
+            (path, table, size),
         )
-        conn.execute("INSERT INTO meta(key, value) VALUES ('seeded','1')")
+    cur = conn.execute(
+        "INSERT INTO compact_plans(plan_code, title, status, target_table, note) "
+        "VALUES ('CP-2026-001','订单碎文件压实','草稿','dw_orders','首轮样例计划')"
+    )
+    plan_id = cur.lastrowid
+    order_ids = conn.execute(
+        "SELECT id FROM lake_files WHERE table_name='dw_orders' ORDER BY id"
+    ).fetchall()
+    for row in order_ids[:3]:
         conn.execute(
-            "INSERT INTO meta(key, value) VALUES ('schema_version', ?)",
-            (SCHEMA_VERSION,),
+            "INSERT INTO plan_items(plan_id, file_id) VALUES (?,?)",
+            (plan_id, row["id"]),
         )
-        conn.execute("INSERT INTO meta(key, value) VALUES ('lab','湖表压实台')")
-        try:
-            from app.services.thr_stale_surface import seed_skew
-            seed_skew(db_path)
-        except Exception:
-            pass
-        return {
-            "seeded": True,
-            "files": len(files),
-            "plans": 1,
-            "settings": 3,
-        }
+        conn.execute(
+            "UPDATE lake_files SET status='已入计划' WHERE id=?",
+            (row["id"],),
+        )
+    conn.execute(
+        "INSERT INTO lab_settings(key, value, label) VALUES "
+        "('compact_threshold_kb','256','碎文件阈值(KB)'),"
+        "('rewrite_parallel','1','合并并发度'),"
+        "('reconcile_mode','严格','对账模式')"
+    )
+    conn.execute("INSERT INTO meta(key, value) VALUES ('seeded','1')")
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES ('schema_version', ?)",
+        (SCHEMA_VERSION,),
+    )
+    conn.execute("INSERT INTO meta(key, value) VALUES ('lab','湖表压实台')")
 
 
 def reset_seed(db_path: str | None = None) -> None:
     init_schema(db_path)
     with get_db(db_path) as conn:
         for table in (
+            "threshold_snapshots",
             "volume_reports",
             "rewrite_jobs",
             "plan_items",

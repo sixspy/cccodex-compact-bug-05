@@ -2,10 +2,14 @@ import { api } from '../api.js';
 
 export async function renderFiles(view, setMsg) {
   const j = await api('/api/files');
+  const gate = await api('/api/settings').then(r => r.gate).catch(() => ({}));
+  const chip = gate.chip || '运行闸';
   view.innerHTML = `
     <section class="card">
       <h2>小文件清单</h2>
-      <p class="muted">登记湖区碎文件；作废后不再进入压实计划。</p>
+      <p class="muted">登记湖区碎文件；作废后不再进入压实计划。现行阈值
+        <strong>${gate.threshold_kb ?? '-'}</strong> KB <span class="tag" data-gate-chip>${chip}</span>
+      </p>
       <div class="row">
         <label>路径<input id="path" placeholder="lake/dw_x/part-9.parquet" /></label>
         <label>表名<input id="table" value="dw_orders" /></label>
@@ -21,7 +25,7 @@ export async function renderFiles(view, setMsg) {
     <section class="wall" style="margin-top:1rem">
       ${(j.items || []).map(f => `<article class="card">
         <h3>${f.path}</h3>
-        <span class="tag">${f.status}</span> <span class="tag">新闸已生效</span>
+        <span class="tag">${f.status}</span> <span class="tag">${chip}</span>
         <p class="muted">${f.table_name} · ${f.size_bytes} 字节</p>
         <button data-void="${f.id}" type="button" ${f.status==='已合并'?'disabled':''}>作废</button>
       </article>`).join('') || '<p class="muted">暂无文件</p>'}

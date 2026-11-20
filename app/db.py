@@ -58,6 +58,17 @@ CREATE TABLE IF NOT EXISTS lab_settings (
   label TEXT NOT NULL
 );
 
+-- 阈值闸快照：每一次“保存阈值”落一行，credential 即当时生效的闸凭证。
+-- 现行阈值(lab_settings)与最新快照必须一致，否则视为口径漂移，拒绝挂件/合并。
+CREATE TABLE IF NOT EXISTS threshold_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  seq INTEGER NOT NULL UNIQUE,
+  threshold_kb INTEGER NOT NULL,
+  credential TEXT NOT NULL UNIQUE,
+  source TEXT NOT NULL DEFAULT 'save',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -68,9 +79,11 @@ CREATE TABLE IF NOT EXISTS meta (
 def connect(db_path: str | None = None) -> sqlite3.Connection:
     path = db_path or Config.database()
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, check_same_thread=False)
+    conn = sqlite3.connect(path, check_same_thread=False, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # 并发保存闸凭证时，写锁等待而不是立即抛 “database is locked”。
+    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 

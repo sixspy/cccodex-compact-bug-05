@@ -3,11 +3,16 @@ import { api } from '../api.js';
 export async function renderRewrite(view, setMsg) {
   const plans = await api('/api/plans');
   const jobs = await api('/api/rewrite/jobs');
+  const gate = await api('/api/settings').then(r => r.gate).catch(() => ({}));
+  const chip = gate.chip || '运行闸';
   const options = (plans.items || []).map(p => `<option value="${p.id}">${p.plan_code} · ${p.status}</option>`).join('');
   view.innerHTML = `
     <section class="card">
       <h2>重写合并</h2>
-      <p class="muted">对已发布计划启动合并；成功后碎文件变为已合并。</p>
+      <p class="muted">对已发布计划启动合并；成功后碎文件变为已合并。
+        合并队列听现行阈值 <strong>${gate.threshold_kb ?? '-'}</strong> KB
+        <span class="tag" data-gate-chip>${chip}</span>
+        · ${gate.aligned ? '口径已对齐' : (gate.reason || '口径漂移，拒绝启动')}</p>
       <div class="row">
         <label>计划<select id="pid">${options}</select></label>
         <button class="primary" id="go" type="button">启动合并</button>

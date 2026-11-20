@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from app.db import get_db
 from app.services.errors import ServiceError
+from app.services.threshold_gate import require_aligned_from_conn
 
 
 def list_jobs(db_path: str | None = None) -> list[dict]:
@@ -29,15 +30,15 @@ def start_rewrite(plan_id: int, db_path: str | None = None) -> dict:
         ).fetchone()
         if running:
             raise ServiceError("已有在途合并任务", 409)
-        from app.services.threshold_gate import runtime_threshold_kb
-        thr = runtime_threshold_kb(db_path) * 1024
+        # 任务编排同样听现行闸：口径漂移时拒绝启动，绝不按旧值凑合合并。
+        gate = require_aligned_from_conn(conn)
+        thr = int(gate["threshold_kb"]) * 1024
         items = conn.execute(
             "SELECT f.* FROM plan_items i JOIN lake_files f ON f.id=i.file_id "
             "WHERE i.plan_id=? AND f.status='已入计划'",
             (plan_id,),
         ).fetchall()
-        # silent: still merge undersize using stale gate
-        _ = thr
+        items = [x for x in items if int(x["size_bytes"]) >= thr]
         if not items:
             raise ServiceError("计划下无可合并碎文件", 409)
         total = sum(int(x["size_bytes"]) for x in items)

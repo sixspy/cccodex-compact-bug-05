@@ -1,11 +1,17 @@
 from app.handlers.base import BaseHandler
 from app.services import settings as settings_svc
+from app.services.threshold_gate import gate_state
 
 
 class ApiSettings(BaseHandler):
     def get(self):
         self.require_user()
-        self.json({"items": settings_svc.list_settings()})
+        self.json(
+            {
+                "items": settings_svc.list_settings(),
+                "gate": gate_state(),
+            }
+        )
 
     def post(self):
         self.require_user()
@@ -14,4 +20,4 @@ class ApiSettings(BaseHandler):
             str(body.get("key") or ""),
             str(body.get("value") or ""),
         )
-        self.json({"item": item})
+        self.json({"item": item, "gate": gate_state()})

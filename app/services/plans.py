@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from app.db import get_db
 from app.services.errors import ServiceError
+from app.services.threshold_gate import require_aligned_from_conn
 
 
 def list_plans(db_path: str | None = None) -> list[dict]:
@@ -54,13 +55,14 @@ def attach_loose_files(plan_id: int, db_path: str | None = None) -> dict:
             raise ServiceError("计划不存在", 404)
         if plan["status"] not in ("草稿", "已发布"):
             raise ServiceError("当前计划状态不可挂文件", 409)
-        from app.services.threshold_gate import runtime_threshold_kb
-        thr = runtime_threshold_kb(db_path) * 1024
+        # 闸口径在当前事务内判定：现行阈值与最新快照漂移时拒绝入库。
+        gate = require_aligned_from_conn(conn)
+        thr = int(gate["threshold_kb"]) * 1024
         loose = conn.execute(
             "SELECT id, size_bytes FROM lake_files WHERE table_name=? AND status='碎文件'",
             (plan["target_table"],),
         ).fetchall()
-        loose = [r for r in loose if int(r["size_bytes"]) >= thr or True]
+        loose = [r for r in loose if int(r["size_bytes"]) >= thr]
         attached = 0
         for row in loose:
             exists = conn.execute(
@@ -78,7 +80,7 @@ def attach_loose_files(plan_id: int, db_path: str | None = None) -> dict:
                 (row["id"],),
             )
             attached += 1
-        return {"plan_id": plan_id, "attached": attached}
+        return {"plan_id": plan_id, "attached": attached, "gate": gate}
 
 
 def publish_plan(plan_id: int, db_path: str | None = None) -> dict:
